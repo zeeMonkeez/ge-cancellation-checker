@@ -6,21 +6,20 @@ from subprocess import check_output
 from datetime import datetime
 from os import path
 import sys, smtplib, json
+from email.mime.text import MIMEText
 
-PWD = path.dirname(sys.argv[0]) 
-
+PWD = path.dirname(sys.argv[0])
+if PWD == '':
+    PWD = '.'
 # Get settings
 try:
-    with open('%s/config.json' % PWD) as json_file:    
+    with open('%s/config.json' % PWD) as json_file:
         settings = json.load(json_file)
 except Exception as e:
     print 'Error extracting config file: %s' % e
     sys.exit()
 
 # Make sure we have all our settings
-if not 'current_interview_date_str' in settings or not settings['current_interview_date_str']:
-    print 'Missing current_interview_date_str in config'
-    sys.exit()
 if not 'email_from' in settings or not settings['email_from']:
     print 'Missing from address in config'
     sys.exit()
@@ -40,7 +39,6 @@ if not 'password' in settings or not settings['password']:
     print 'Missing password in config'
     sys.exit()
 
-CURRENT_INTERVIEW_DATE = datetime.strptime(settings['current_interview_date_str'], '%B %d, %Y')
 
 def log(msg):
     print msg
@@ -50,37 +48,42 @@ def log(msg):
         logfile.write('%s: %s\n' % (datetime.now(), msg))
 
 def send_apt_available_email(current_apt, avail_apt):
-    message = """From: %s
-To: %s
-Subject: Alert: New Global Entry Appointment Available
-Content-Type: text/html
-
-<p>Good news! There's a new Global Entry appointment available on <b>%s</b> (your current appointment is on %s).</p>
+    message = """<p>Good news! There's a new Global Entry appointment available on <b>%s</b> (your current appointment is on %s).</p>
 
 <p>If this sounds good, please sign in to https://goes-app.cbp.dhs.gov/main/goes to reschedule.</p>
-
-<p>If you reschedule, please remember to update CURRENT_INTERVIEW_DATE in your config.json file.</p>
-""" % (settings['email_from'], ', '.join(settings['email_to']), avail_apt.strftime('%B %d, %Y'), current_apt.strftime('%B %d, %Y'))
+""" % (avail_apt.strftime('%B %d, %Y'), current_apt.strftime('%B %d, %Y'))
 
     try:
-        server = smtplib.SMTP('localhost')
-        server.sendmail(settings['email_from'], settings['email_to'], message)
+        msg = MIMEText(message, 'html')
+        msg['Subject'] = "Alert: New Global Entry Appointment Available"
+        msg['To'] = ", ".join(settings['email_to'])
+        msg['From'] = settings['email_from']
+
+        server = smtplib.SMTP(settings['smtp_server'], settings['smtp_port'])
+        server.starttls()
+        server.login(settings['smtp_user'], settings['smtp_pw'])
+        server.sendmail(settings['email_from'], settings['email_to'], msg.as_string())
         server.quit()
     except Exception as e:
-        log('Failed to send success email')
+        log('Failed to send success email {}'.format(e))
 
+new_apt_str = check_output(['/usr/local/bin/phantomjs', '%s/ge-cancellation-checker.phantom.js' % PWD]); # get string from PhantomJS script - formatted like 'July 20, 2015'
 
-
-new_apt_str = check_output(['phantomjs', '%s/ge-cancellation-checker.phantom.js' % PWD]); # get string from PhantomJS script - formatted like 'July 20, 2015'
 new_apt_str = new_apt_str.strip()
+new_apt_str, old_apt_str = new_apt_str.split("\n")
 
-try: new_apt = datetime.strptime(new_apt_str, '%B %d, %Y')
+try: new_apt = datetime.strptime(new_apt_str, '%H:%M %B %d, %Y')
 except ValueError as e:
-    log('%s' % new_apt_str)
+    log('not valid date: %s' % new_apt_str)
     sys.exit()
 
-if new_apt < CURRENT_INTERVIEW_DATE: # new appointment is newer than existing!
-    send_apt_available_email(CURRENT_INTERVIEW_DATE, new_apt)   
-    log('Found new appointment on %s (current is on %s)!' % (new_apt, CURRENT_INTERVIEW_DATE))
+try: old_apt = datetime.strptime(old_apt_str, '%H:%M %b %d, %Y')
+except ValueError as e:
+    log('not valid old date: %s' % old_apt_str)
+    sys.exit()
+
+if new_apt < old_apt: # new appointment is newer than existing!
+    send_apt_available_email(old_apt, new_apt)
+    log('Found new appointment on %s (current is on %s)!' % (new_apt, old_apt))
 else:
-    log('No new appointments. Next available on %s (current is on %s)' % (new_apt, CURRENT_INTERVIEW_DATE))
+    log('No new appointments. Next available on %s (current is on %s)' % (new_apt, old_apt))

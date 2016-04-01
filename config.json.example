@@ -1,12 +1,13 @@
 {
-    "current_interview_date_str": "",
     "logfile": "",
-     
     "email_from": "",
-    "email_to": [],
-     
-    "username": "", 
+    "email_to": ["", ""],
+    "username": "",
     "password": "",
     "enrollment_location_id": "",
     "init_url": "https://goes-app.cbp.dhs.gov/main/goes",
+    "smtp_user": "",
+    "smtp_pw": "",
+    "smtp_port": 587,
+    "smtp_server": "smtp.gmail.com"
 }

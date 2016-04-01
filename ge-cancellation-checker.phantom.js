@@ -6,7 +6,6 @@ var system = require('system');
 var fs = require('fs');
 
 var VERBOSE = false;
-var loadInProgress = false;
 
 // Calculate path of this file
 var PWD = '';
@@ -16,7 +15,7 @@ else {
     current_path_arr.pop();
     PWD = current_path_arr.join('/');
 }
-
+var current_scheduled_date = '';
 // Gather Settings...
 try {
     var settings = JSON.parse(fs.read(PWD + '/config.json'));
@@ -35,12 +34,6 @@ system.args.forEach(function(val, i) {
     if (val == '-v' || val == '--verbose') { VERBOSE = true; }
 });
 
-function fireClick(el) {
-    var ev = document.createEvent("MouseEvents");
-    ev.initEvent("click", true, true);
-    el.dispatchEvent(ev);
-}
-
 var page = require('webpage').create();
 
 page.onConsoleMessage = function(msg) {
@@ -56,13 +49,21 @@ page.onError = function(msg, trace) {
 page.onCallback = function(query, msg) {
     if (query == 'username') { return settings.username; }
     if (query == 'password') { return settings.password; }
-    if (query == 'fireClick') {
-        return function() { return fireClick; } // @todo:david DON'T KNOW WHY THIS DOESN'T WORK! :( Just returns [Object object])
+    if (query == 'enrollment_location_id') { return settings.enrollment_location_id; }
+    if (query == 'scheduled_date') {
+      current_scheduled_date = msg;
+      return;
     }
     if (query == 'report-interview-time') {
-        if (VERBOSE) { console.log('Next available appointment is at: ' + msg); }
-        else { console.log(msg); }
-        return;  
+        if (VERBOSE) {
+          console.log('Next available appointment is at: ' + msg);
+          console.log('Current appointment is at: ' + current_scheduled_date);
+        }
+        else {
+          console.log(msg);
+          console.log(current_scheduled_date);
+        }
+        return;
     }
     if (query == 'fatal-error') {
         console.log('Fatal error: ' + msg);
@@ -71,12 +72,7 @@ page.onCallback = function(query, msg) {
     return null;
 }
 
-page.onLoadStarted = function() { loadInProgress = true; };
-page.onLoadFinished = function() { loadInProgress = false; };
 
-if (VERBOSE) { console.log('Please wait...'); }
-
-page.open(settings.init_url);
 var steps = [
     function() { // Log in
         page.evaluate(function() {
@@ -89,13 +85,13 @@ var steps = [
     },
     function() { // Accept terms
         page.evaluate(function() {
-            
+
             function fireClick(el) {
                 var ev = document.createEvent("MouseEvents");
                 ev.initEvent("click", true, true);
                 el.dispatchEvent(ev);
             }
-            
+
             var $acceptTermsBtn = document.querySelector('a[href="/main/goes/HomePagePreAction.do"]');
 
             if (!$acceptTermsBtn) {
@@ -108,13 +104,12 @@ var steps = [
     },
     function() { // main dashboard
         page.evaluate(function() {
-
             function fireClick(el) {
                 var ev = document.createEvent("MouseEvents");
                 ev.initEvent("click", true, true);
                 el.dispatchEvent(ev);
             }
-            
+
             var $manageAptBtn = document.querySelector('.bluebutton[name=manageAptm]');
             if (!$manageAptBtn) {
                 return window.callPhantom('fatal-error', 'Unable to find Manage Appointment button');
@@ -125,16 +120,20 @@ var steps = [
         });
     },
     function() {
-        page.evaluate(function() {
 
+        page.evaluate(function() {
             function fireClick(el) {
                 var ev = document.createEvent("MouseEvents");
                 ev.initEvent("click", true, true);
                 el.dispatchEvent(ev);
             }
-            
+
+            var csd = jQuery('strong:contains("Interview Date")').parent().clone().children().remove().end().text().trim();
+            var cst = jQuery('strong:contains("Interview Time")').parent().clone().children().remove().end().text().trim();
+
+            window.callPhantom('scheduled_date', cst + ' ' + csd);
             var $rescheduleBtn = document.querySelector('input[name=reschedule]');
-    
+
             if (!$rescheduleBtn) {
                 return window.callPhantom('fatal-error', 'Unable to find reschedule button. Is it after or less than 24 hrs before your appointment?');
             }
@@ -145,43 +144,59 @@ var steps = [
     },
     function() {
         page.evaluate(function() {
+            var locid = window.callPhantom('enrollment_location_id').toString();
 
-            function fireClick(el) {
-                var ev = document.createEvent("MouseEvents");
-                ev.initEvent("click", true, true);
-                el.dispatchEvent(ev);
-            }
-
-            document.querySelector('select[name=selectedEnrollmentCenter]').value = settings.enrollment_location_id.toString();
-            fireClick(document.querySelector('input[name=next]'));
+            $('#selectedEnrollmentCenter')[0].value = locid;
+            $('input[name=next]')[0].click();
             console.log('Choosing SFO...');
         });
     },
     function() {
-
         page.evaluate(function() {
-
             // We made it! Now we have to scrape the page for the earliest available date
-            
-            var date = document.querySelector('.date table tr:first-child td:first-child').innerHTML;
-            var month_year = document.querySelector('.date table tr:last-child td:last-child div').innerHTML;
+            var day = $('.currentDayCell')[0].textContent;
+            var month_year = $('.yearMonthHeader :nth-child(2)')[0].textContent;
+            var first_time = $('a.entry').first().text();
 
-            var full_date = month_year.replace(',', ' ' + date + ',');
-            // console.log('');
+            var full_date = first_time + ' ' + month_year.replace(' ', ' ' + day + ', ');
             window.callPhantom('report-interview-time', full_date)
-            // console.log('The next available appointment is on ' + full_date + '.');
         });
     }
 ];
 
-var i = 0;
-interval = setInterval(function() {
-    if (loadInProgress) { return; } // not ready yet...
-    if (typeof steps[i] != "function") {
-        return phantom.exit();
-    }
+var phantom_state = 'start';
 
-    steps[i]();
-    i++;
+page.onLoadFinished = function(status) {
+  if (status === 'success') {
+    page.includeJs("https://ajax.googleapis.com/ajax/libs/jquery/1.12.2/jquery.min.js", function() {
+      if (phantom_state == 'start') {
+        steps[0]();
+        phantom_state = 'accept';
+      }
+      else if (phantom_state == 'accept') {
+        steps[1]();
+        phantom_state = 'main';
+      }
+      else if (phantom_state == 'main') {
+        steps[2]();
+        phantom_state = 'current_interview';
+      }
+      else if (phantom_state == 'current_interview') {
+        steps[3]();
+        phantom_state = 'enrollment_center';
+      }
+      else if (phantom_state == 'enrollment_center') {
+        steps[4]();
+        phantom_state = 'get_date';
+      }
+      else if (phantom_state == 'get_date') {
+        steps[5]();
+        phantom.exit();
+      }
+    });
+  }
+};
 
-}, 100);
+if (VERBOSE) { console.log('Please wait...'); }
+
+page.open(settings.init_url);
